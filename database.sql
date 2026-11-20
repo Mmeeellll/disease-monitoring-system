@@ -5,7 +5,7 @@
 --          default settings, and initial admin account).
 -- ============================================================================
 
-DROP DATABASE IF EXISTS disease_monitoring;
+DROP DATABASE IF EXISTS `disease_monitoring`;
 CREATE DATABASE `disease_monitoring` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE `disease_monitoring`;
 

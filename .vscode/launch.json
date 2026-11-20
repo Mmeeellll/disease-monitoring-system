@@ -1,48 +1,65 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    // Specifies the VS Code launch configuration schema version
     "version": "0.2.0",
+
+    // List of different ways you can run or debug this PHP project in VS Code
     "configurations": [
         {
+            // Name shown in VS Code's Run and Debug dropdown menu
             "name": "Launch Built-in Web Server (XAMPP PHP)",
+            // Uses the PHP Debug extension
             "type": "php",
+            // Starts a new PHP process instead of attaching to an existing one
             "request": "launch",
+            // Points directly to XAMPP's PHP executable on Windows
             "runtimeExecutable": "C:\\xampp\\php\\php.exe",
+            // Command-line flags passed to php.exe when starting
             "runtimeArgs": [
                 "-c",
-                "C:\\xampp\\php\\php.ini",
+                "C:\\xampp\\php\\php.ini", // Loads XAMPP's php.ini configuration file
                 "-S",
-                "localhost:8000",
+                "localhost:8000",          // Starts PHP's built-in server on port 8000 (this is why your app uses localhost:8000!)
                 "-t",
-                "${workspaceFolder}"
+                "${workspaceFolder}"       // Sets your open VS Code project folder as the website root
             ],
+            // Port Xdebug uses to communicate breakpoints back to VS Code
             "port": 9003,
+            // Automatically opens your browser once the server finishes starting
             "serverReadyAction": {
+                // Watches terminal output for the server startup message and captures the port number
                 "pattern": "Development Server \\(http://localhost:([0-9]+)\\) started",
+                // Opens http://localhost:8000/login.php automatically
                 "uriFormat": "http://localhost:%s/login.php",
+                // Launches the URL in your default external web browser (e.g., Brave/Chrome)
                 "action": "openExternally"
             }
         },
         {
+            // Second option: runs the built-in server with performance profiling enabled
             "name": "Launch built-in server and Profile",
             "type": "php",
             "request": "launch",
+            // Disables step-by-step breakpoint debugging so profiling runs accurately
             "noDebug": true,
             "runtimeArgs": [
                 "-S",
-                "localhost:8000",
+                "localhost:8000", // Runs on localhost:8000 using the system's default PHP
                 "-t",
-                "."
+                "."               // Uses the current directory as the web root
             ],
+            // Sets the working directory to your project root
             "cwd": "${workspaceRoot}/.",
+            // Opens the root URL in your browser once ready
             "serverReadyAction": {
                 "action": "openExternally"
             },
+            // Generates a PHP performance profile log to check slow code
             "profile": true,
+            // Automatically opens the generated profile report in VS Code
             "openProfile": true
         },
         {
+            // Third option: waits for an external server (like XAMPP Apache) to connect via Xdebug
             "name": "Listen for Xdebug",
             "type": "php",
             "request": "launch"
