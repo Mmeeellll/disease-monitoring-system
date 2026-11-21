@@ -28,7 +28,7 @@ $nav = [
 $pageTitle  = $page === 'view_import' ? 'Spreadsheet Net View' : ($nav[$page][0] ?? 'Dashboard');
 $flash      = $_SESSION['flash'] ?? null; unset($_SESSION['flash']);
 $cityName   = db()->query("SELECT setting_value FROM settings WHERE setting_key='city_name'")->fetchColumn() ?: 'Butuan City';
-$openAlerts = (int)db()->query("SELECT COUNT(*) FROM alerts WHERE status!='Resolved'")->fetchColumn();
+$openAlerts = (int)db()->query("SELECT COUNT(*) FROM alerts WHERE status NOT IN ('Resolved', 'Completed')")->fetchColumn();
 ?>
 <!doctype html>
 <html lang="en">
@@ -295,56 +295,51 @@ $openAlerts = (int)db()->query("SELECT COUNT(*) FROM alerts WHERE status!='Resol
     </a>
 
     <div class="nav-label">WORKSPACE</div>
-    <nav>
-      <?php
-      // Role-Based Menu Filtering: Encoders only see permitted workspace items
-      $currentRole  = $_SESSION['role'] ?? 'Encoder';
-      $isFullAccess = in_array($currentRole, ['Administrator', 'Health Officer'], true);
-      ?>
+<nav>
+  <?php
+  $currentRole  = $_SESSION['role'] ?? 'Encoder';
+  $isFullAccess = in_array($currentRole, ['Administrator', 'Health Officer'], true);
+  ?>
 
-      <a href="index.php?page=dashboard" class="nav-link <?= $page === 'dashboard' ? 'active' : '' ?>">
-        <i class="bi bi-grid-1x2-fill"></i> Dashboard
-      </a>
-
-      <a href="index.php?page=cases" class="nav-link <?= $page === 'cases' ? 'active' : '' ?>">
-        <i class="bi bi-clipboard2-pulse-fill"></i> Disease Cases
-      </a>
-
-      <?php if ($isFullAccess): ?>
-        <a href="index.php?page=hotspots" class="nav-link <?= $page === 'hotspots' ? 'active' : '' ?>">
-          <i class="bi bi-geo-alt-fill"></i> Hotspot Map
-        </a>
-        <a href="index.php?page=analytics" class="nav-link <?= $page === 'analytics' ? 'active' : '' ?>">
-          <i class="bi bi-graph-up-arrow"></i> Analytics
-        </a>
-        <a href="index.php?page=reports" class="nav-link <?= $page === 'reports' ? 'active' : '' ?>">
-          <i class="bi bi-file-earmark-bar-graph-fill"></i> Reports
-        </a>
-        <a href="index.php?page=barangays" class="nav-link <?= $page === 'barangays' ? 'active' : '' ?>">
-          <i class="bi bi-buildings-fill"></i> Barangays
-        </a>
-        <a href="index.php?page=alerts" class="nav-link <?= $page === 'alerts' ? 'active' : '' ?>">
-    <i class="bi bi-bell-fill"></i> Alerts
-    <?php if ($openAlerts > 0): ?>
-      <span class="nav-count"><?= $openAlerts ?></span>
-    <?php endif; ?>
+  <a href="index.php?page=dashboard" class="nav-link <?= $page === 'dashboard' ? 'active' : '' ?>">
+    <i class="bi bi-grid-1x2-fill"></i> Dashboard
   </a>
-      <?php endif; ?>
 
-      <a href="index.php?page=recommendations" class="nav-link <?= $page === 'recommendations' ? 'active' : '' ?>">
-        <i class="bi bi-lightbulb-fill"></i> Recommendations
-      </a>
+  <a href="index.php?page=cases" class="nav-link <?= $page === 'cases' ? 'active' : '' ?>">
+    <i class="bi bi-clipboard2-pulse-fill"></i> Disease Cases
+  </a>
 
-      <?php if ($isFullAccess): ?>
-        <a href="index.php?page=users" class="nav-link <?= $page === 'users' ? 'active' : '' ?>">
-          <i class="bi bi-people-fill"></i> Users
-        </a>
-      <?php endif; ?>
+  <?php if ($isFullAccess): ?>
+    <a href="index.php?page=hotspots" class="nav-link <?= $page === 'hotspots' ? 'active' : '' ?>">
+      <i class="bi bi-geo-alt-fill"></i> Hotspot Map
+    </a>
+    <a href="index.php?page=analytics" class="nav-link <?= $page === 'analytics' ? 'active' : '' ?>">
+      <i class="bi bi-graph-up-arrow"></i> Analytics
+    </a>
+    <a href="index.php?page=reports" class="nav-link <?= $page === 'reports' ? 'active' : '' ?>">
+      <i class="bi bi-file-earmark-bar-graph-fill"></i> Reports
+    </a>
+    <a href="index.php?page=barangays" class="nav-link <?= $page === 'barangays' ? 'active' : '' ?>">
+      <i class="bi bi-buildings-fill"></i> Barangays
+    </a>
+ <?php endif; ?>
+  <a href="index.php?page=alerts" class="nav-link <?= $page === 'alerts' ? 'active' : '' ?>">
+    <i class="bi bi-bell-fill"></i> Alerts
+    <?php if ($openAlerts): ?><span class="nav-count"><?= $openAlerts ?></span><?php endif; ?>
+  </a>
 
-      <a href="index.php?page=settings" class="nav-link <?= $page === 'settings' ? 'active' : '' ?>">
-        <i class="bi bi-sliders"></i> Settings
-      </a>
-    </nav>
+  <a href="index.php?page=recommendations" class="nav-link <?= $page === 'recommendations' ? 'active' : '' ?>">
+    <i class="bi bi-lightbulb-fill"></i> Recommendations
+  </a>
+
+    <a href="index.php?page=users" class="nav-link <?= $page === 'users' ? 'active' : '' ?>">
+      <i class="bi bi-people-fill"></i> Users
+    </a>
+
+  <a href="index.php?page=settings" class="nav-link <?= $page === 'settings' ? 'active' : '' ?>">
+    <i class="bi bi-sliders"></i> Settings
+  </a>
+</nav>
 
     <div class="sidebar-bottom">
       <div class="city-chip" title="Local Health Unit">
@@ -379,23 +374,23 @@ $openAlerts = (int)db()->query("SELECT COUNT(*) FROM alerts WHERE status!='Resol
       </div>
 
       <div class="top-actions">
-        <div class="quick-actions">
-          <a href="index.php?page=cases" class="quick-btn" title="New case">
-            <i class="bi bi-plus-lg"></i>
-          </a>
-          <?php if ($isFullAccess): ?>
-            <a href="index.php?page=alerts" class="quick-btn" title="Alerts">
-              <i class="bi bi-bell"></i>
-              <?php if($openAlerts): ?><span class="badge-dot"></span><?php endif; ?>
-            </a>
-            <a href="index.php?page=reports" class="quick-btn" title="Reports">
-              <i class="bi bi-file-earmark-bar-graph"></i>
-            </a>
-            <a href="index.php?page=hotspots" class="quick-btn" title="Hotspot map">
-              <i class="bi bi-geo-alt"></i>
-            </a>
-          <?php endif; ?>
-        </div>
+<div class="quick-actions">
+  <a href="index.php?page=cases" class="quick-btn" title="New case">
+    <i class="bi bi-plus-lg"></i>
+  </a>
+  <a href="index.php?page=alerts" class="quick-btn" title="Alerts">
+    <i class="bi bi-bell"></i>
+    <?php if($openAlerts): ?><span class="badge-dot"></span><?php endif; ?>
+  </a>
+  <?php if ($isFullAccess): ?>
+    <a href="index.php?page=reports" class="quick-btn" title="Reports">
+      <i class="bi bi-file-earmark-bar-graph"></i>
+    </a>
+    <a href="index.php?page=hotspots" class="quick-btn" title="Hotspot map">
+      <i class="bi bi-geo-alt"></i>
+    </a>
+  <?php endif; ?>
+</div>
 
         <span class="live-status"><i></i> System online</span>
 

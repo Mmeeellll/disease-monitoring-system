@@ -165,11 +165,11 @@ CREATE TABLE `cases` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `cases` (`id`, `patient_code`, `disease`, `barangay_id`, `report_date`, `case_count`, `risk_level`, `status`, `notes`, `created_by`, `created_at`) VALUES
-(1, 'DM-DEMO-001', 'Cough', 29, '2026-05-02', 3, 'Low', 'Active', NULL, NULL, '2026-10-15 05:23:57'),
-(2, 'DM-DEMO-002', 'Chickenpox', 67, '2026-05-01', 2, 'Low', 'Recovered', NULL, NULL, '2026-10-15 05:23:57'),
-(3, 'DM-DEMO-003', 'Fever', 49, '2026-05-01', 4, 'Low', 'Recovered', NULL, NULL, '2026-10-15 05:23:57'),
-(4, 'DM-DEMO-004', 'Tuberculosis', 68, '2026-04-30', 1, 'Low', 'Active', NULL, NULL, '2026-10-15 05:23:57'),
-(5, 'DM-DEMO-005', 'Diarrhea', 27, '2026-04-30', 2, 'Low', 'Active', NULL, NULL, '2026-10-15 05:23:57');
+-- (1, 'DM-DEMO-001', 'Cough', 29, '2026-05-02', 3, 'Low', 'Active', NULL, NULL, '2026-10-15 05:23:57'),
+-- -- (2, 'DM-DEMO-002', 'Chickenpox', 67, '2026-05-01', 2, 'Low', 'Recovered', NULL, NULL, '2026-10-15 05:23:57'),
+-- (3, 'DM-DEMO-003', 'Fever', 49, '2026-05-01', 4, 'Low', 'Recovered', NULL, NULL, '2026-10-15 05:23:57'),
+-- (4, 'DM-DEMO-004', 'Tuberculosis', 68, '2026-04-30', 1, 'Low', 'Active', NULL, NULL, '2026-10-15 05:23:57'),
+-- (5, 'DM-DEMO-005', 'Diarrhea', 27, '2026-04-30', 2, 'Low', 'Active', NULL, NULL, '2026-10-15 05:23:57');
 
 -- --------------------------------------------------------
 -- Table: `recommendations`
