@@ -92,7 +92,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           <b>Demo account</b><br><br>
           Email: admin@disease.local<br>Password: password<br><br>
           Email: officer@disease.local<br>Password: Officer@2026<br><br>
-          Email: Maonencoder@disease.local<br>Password: Encoder@2026
+          Email: Maonencoder@disease.local<br>Password: Encoder@2026<br><br>
+          Email: Libertadencoder@disease.local<br>Password: Encoder@2026
         </div>
       </div>
       <div class="login-copyright">© <?= date('Y') ?> Disease Monitoring System</div>
