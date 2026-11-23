@@ -5,14 +5,47 @@
 --          default settings, and initial admin account).
 -- ============================================================================
 
-DROP DATABASE IF EXISTS `disease_monitoring`;
-CREATE DATABASE `disease_monitoring` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE `disease_monitoring`;
+/*!40101 DROP DATABASE IF EXISTS `disease_monitoring` */;
+/*!40101 CREATE DATABASE `disease_monitoring` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci */;
+/*!40101 USE `disease_monitoring` */;
 
 SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
 START TRANSACTION;
 SET time_zone = "+00:00";
 
+CREATE TABLE `alert_recipients`(
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    alert_id INT NOT NULL,
+    barangay_id INT NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'Pending',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_alert_brgy (alert_id, barangay_id),
+    CONSTRAINT fk_ar_alert FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE,
+    CONSTRAINT fk_ar_brgy FOREIGN KEY (barangay_id) REFERENCES barangays(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE `recommendation_recipients` (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    recommendation_id INT NOT NULL,
+    barangay_id INT NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'Pending',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_rec_brgy (recommendation_id, barangay_id),
+    CONSTRAINT fk_rr_rec FOREIGN KEY (recommendation_id) REFERENCES recommendations(id) ON DELETE CASCADE,
+    CONSTRAINT fk_rr_brgy FOREIGN KEY (barangay_id) REFERENCES barangays(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Migrate existing alerts into alert_recipients
+INSERT IGNORE INTO alert_recipients (alert_id, barangay_id, status)
+SELECT a.id, b.id, a.status
+FROM alerts a
+JOIN barangays b ON (a.barangay_id IS NULL OR a.barangay_id = b.id);
+
+-- Migrate existing recommendations into recommendation_recipients
+INSERT IGNORE INTO recommendation_recipients (recommendation_id, barangay_id, status)
+SELECT r.id, b.id, r.status
+FROM recommendations r
+JOIN barangays b ON (r.barangay_id IS NULL OR r.barangay_id = b.id);
 -- --------------------------------------------------------
 -- Table: `alerts`
 -- Purpose: Stores health advisories, priority levels, status, and optional PDF memo paths.

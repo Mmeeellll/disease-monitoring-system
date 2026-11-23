@@ -14,6 +14,24 @@
 require_once 'config.php';
 require_login();
 
+$userRole     = $_SESSION['role'] ?? 'Encoder';
+$isFullAccess = in_array($userRole, ['Administrator', 'Health Officer'], true);
+
+$sessUserId = $_SESSION['user_id'] ?? ($_SESSION['user']['id'] ?? null);
+$sessEmail  = $_SESSION['email']   ?? ($_SESSION['user']['email'] ?? null);
+$sessName   = $_SESSION['name']    ?? (is_string($_SESSION['user'] ?? null) ? $_SESSION['user'] : ($_SESSION['user']['name'] ?? null));
+
+$currentUserRow = null;
+if ($sessUserId) {
+    $currentUserRow = rows('SELECT id, barangay_id FROM users WHERE id = ?', [(int)$sessUserId])[0] ?? null;
+} elseif ($sessEmail) {
+    $currentUserRow = rows('SELECT id, barangay_id FROM users WHERE email = ?', [$sessEmail])[0] ?? null;
+} elseif ($sessName) {
+    $currentUserRow = rows('SELECT id, barangay_id FROM users WHERE name = ? AND role = ?', [$sessName, $userRole])[0] ?? null;
+}
+
+$myBarangayId = !empty($currentUserRow['barangay_id']) ? (int)$currentUserRow['barangay_id'] : 0;
+
 // Helper: Fetch a single scalar value from a prepared SQL query
 function scalar(string $sql, array $args = []) {
     $s = db()->prepare($sql);
@@ -26,6 +44,45 @@ function rows(string $sql, array $args = []): array {
     $s = db()->prepare($sql);
     $s->execute($args);
     return $s->fetchAll();
+}
+
+// Helper: Map alert/recommendation priority levels to Bootstrap badge tones
+function risk_tone(string $priority): string {
+    return match (strtolower(trim($priority))) {
+        'high' => 'danger',
+        'medium' => 'warning',
+        'low' => 'success',
+        default => 'secondary',
+    };
+}
+
+// Helper: Render a consistent Bootstrap status badge with an optional icon.
+function badge(string $text, string $tone = 'secondary', string $icon = ''): string {
+    $iconHtml = $icon !== '' ? '<i class="bi ' . e($icon) . ' me-1"></i>' : '';
+    return '<span class="badge bg-' . e($tone) . '">' . $iconHtml . e($text) . '</span>';
+}
+
+function sync_directive_summary(string $type, int $parentId): void {
+    $tbl    = $type === 'alert' ? 'alerts' : 'recommendations';
+    $recTbl = $type === 'alert' ? 'alert_recipients' : 'recommendation_recipients';
+    $fkCol  = $type === 'alert' ? 'alert_id' : 'recommendation_id';
+
+    $list = rows("SELECT status FROM {$recTbl} WHERE {$fkCol} = ?", [$parentId]);
+    if (!$list) return;
+
+    $total     = count($list);
+    $completed = count(array_filter($list, fn($r) => $r['status'] === 'Completed'));
+    $accepted  = count(array_filter($list, fn($r) => in_array($r['status'], ['In Progress', 'Completed'], true)));
+
+    if ($completed === $total) {
+        $overall = 'Completed';
+    } elseif ($accepted > 0) {
+        $overall = 'In Progress';
+    } else {
+        $overall = 'Pending';
+    }
+
+    db()->prepare("UPDATE {$tbl} SET status = ? WHERE id = ?")->execute([$overall, $parentId]);
 }
 
 // ========================================
@@ -238,11 +295,9 @@ $isFullAccess = in_array($_SESSION['role'] ?? 'Encoder', ['Administrator', 'Heal
 $currentUserInfo = rows('SELECT u.barangay_id, b.name AS barangay_name FROM users u LEFT JOIN barangays b ON b.id = u.barangay_id WHERE u.id = ?', [(int)($_SESSION['user_id'] ?? 0)])[0] ?? null;
 $myBarangayId   = $currentUserInfo['barangay_id'] ?? null;
 $myBarangayName = $currentUserInfo['barangay_name'] ?? null;
-$encoderAllowedPages = ['dashboard', 'cases', 'alerts', 'recommendations', 'settings'];
+$encoderAllowedPages = ['dashboard', 'cases', 'alerts', 'recommendations'];
 if (!$isFullAccess && !in_array($page, $encoderAllowedPages, true)) {
-    flash('Access denied: Encoders can only access Dashboard, Disease Cases, Alerts, recommendations, and Settings.', 'danger');
-    header('Location: index.php?page=dashboard');
-    exit;
+    $page = 'dashboard';
 }
 
 // ========================================
@@ -557,85 +612,110 @@ $brgyId = ($_POST['barangay_id'] ?? '') !== '' ? (int)$_POST['barangay_id'] : nu
             $page = 'barangays';
 
         // --- CREATE & UPDATE ALERTS ---
-      } elseif ($action === 'save_alert') {
-            if (!$isFullAccess) throw new RuntimeException('Access denied.');
-            $title   = trim($_POST['title'] ?? '');
-            $message = trim($_POST['message'] ?? '');
-            $prio    = $_POST['priority'] ?? 'Medium';
-            $brgyId  = ($_POST['barangay_id'] ?? '') !== '' ? (int)$_POST['barangay_id'] : null;
-            $status  = 'Pending';
+} elseif ($action === 'save_alert') {
+            if (!$isFullAccess) throw new RuntimeException('Only Administrators and Health Officers can create alerts.');
+            $title    = trim($_POST['title'] ?? '');
+            $message  = trim($_POST['message'] ?? '');
+            $priority = $_POST['priority'] ?? 'Medium';
+            $selBrgys = $_POST['barangay_ids'] ?? [];
+            if (!$title || !$message) throw new RuntimeException('Enter alert title and message.');
 
-            if (!$title || !$message) {
-                throw new RuntimeException('Title and message are required.');
+            $memoPath = handleMemoUpload('memo_pdf');
+            $isAll    = in_array('all', $selBrgys, true) || empty($selBrgys);
+            $singleId = (!$isAll && count($selBrgys) === 1) ? (int)$selBrgys[0] : null;
+
+            db()->prepare("INSERT INTO alerts(title, message, attachment, priority, barangay_id, status) VALUES(?,?,?,?,?,'Pending')")
+                ->execute([$title, $message, $memoPath, $priority, $singleId]);
+            $alertId = (int)db()->lastInsertId();
+
+            $targetIds = $isAll
+                ? array_column(rows('SELECT id FROM barangays'), 'id')
+                : array_unique(array_map('intval', $selBrgys));
+
+            $ins = db()->prepare('INSERT IGNORE INTO alert_recipients(alert_id, barangay_id, status) VALUES(?, ?, "Pending")');
+            foreach ($targetIds as $bId) {
+                if ($bId > 0) $ins->execute([$alertId, $bId]);
             }
 
-            $attachmentPath = handleMemoUpload('memo_file');
+            flash('Alert sent to ' . ($isAll ? 'all barangays' : count($targetIds) . ' barangay(s)') . '.');
+            $page = 'alerts';
 
-            db()->prepare('INSERT INTO alerts(title, message, attachment, priority, barangay_id, status) VALUES(?,?,?,?,?,?)')
-                ->execute([$title, $message, $attachmentPath, $prio, $brgyId, $status]);
-
-            flash('Alert sent with Pending status' . ($attachmentPath ? ' and memo attachment.' : '.'));
+        } elseif ($action === 'update_alert') {
+            if (!$isFullAccess) throw new RuntimeException('Only Administrators and Health Officers can manually override alert status.');
+            $id     = (int)($_POST['id'] ?? 0);
+            $status = $_POST['status'] ?? 'Pending';
+            db()->prepare('UPDATE alerts SET status=? WHERE id=?')->execute([$status, $id]);
+            db()->prepare('UPDATE alert_recipients SET status=? WHERE alert_id=?')->execute([$status, $id]);
+            flash('Alert status updated.');
             $page = 'alerts';
 
         } elseif ($action === 'accept_alert') {
             $id = (int)($_POST['id'] ?? 0);
-            db()->prepare("UPDATE alerts SET status='In Progress' WHERE id=? AND status IN ('Pending', 'Open')")
-                ->execute([$id]);
-            flash('Alert accepted. Status is now In Progress.');
+            db()->prepare("UPDATE alert_recipients SET status='In Progress' WHERE alert_id=? AND barangay_id=? AND status='Pending'")
+                ->execute([$id, (int)$myBarangayId]);
+            sync_directive_summary('alert', $id);
+            flash('Alert accepted for your barangay (In Progress).');
             $page = 'alerts';
 
         } elseif ($action === 'complete_alert') {
             $id = (int)($_POST['id'] ?? 0);
-            db()->prepare("UPDATE alerts SET status='Completed' WHERE id=? AND status='In Progress'")
-                ->execute([$id]);
-            flash('Alert marked as Completed.');
+            db()->prepare("UPDATE alert_recipients SET status='Completed' WHERE alert_id=? AND barangay_id=? AND status='In Progress'")
+                ->execute([$id, (int)$myBarangayId]);
+            sync_directive_summary('alert', $id);
+            flash('Alert marked as Completed for your barangay.');
             $page = 'alerts';
 
-        } elseif ($action === 'update_alert') {
-            if (!$isFullAccess) throw new RuntimeException('Access denied.');
-            db()->prepare('UPDATE alerts SET status=? WHERE id=?')->execute([$_POST['status'] ?? 'Pending', (int)$_POST['id']]);
-            flash('Alert status updated.');
-            $page = 'alerts';
+        } elseif ($action === 'save_recommendation') {
+            if (!$isFullAccess) throw new RuntimeException('Only Administrators and Health Officers can create recommendations.');
+            $title    = trim($_POST['title'] ?? '');
+            $desc     = trim($_POST['description'] ?? '');
+            $due      = ($_POST['due_date'] ?? '') !== '' ? $_POST['due_date'] : null;
+            $selBrgys = $_POST['barangay_ids'] ?? [];
+            if (!$title || !$desc) throw new RuntimeException('Enter action title and description.');
 
-        // --- CREATE & UPDATE RECOMMENDATIONS ---
-       } elseif ($action === 'save_recommendation') {
-            if (!$isFullAccess) throw new RuntimeException('Access denied: Encoders cannot create recommendations.');
-            $title   = trim($_POST['title'] ?? '');
-            $desc    = trim($_POST['description'] ?? '');
-            $brgyId  = ($_POST['barangay_id'] ?? '') !== '' ? (int)$_POST['barangay_id'] : null;
-            $status  = 'Pending'; // Always starts as Pending
-            $dueDate = ($_POST['due_date'] ?? '') ?: null;
+            $memoPath = handleMemoUpload('memo_pdf');
+            $isAll    = in_array('all', $selBrgys, true) || empty($selBrgys);
+            $singleId = (!$isAll && count($selBrgys) === 1) ? (int)$selBrgys[0] : null;
 
-            if (!$title || !$desc) {
-                throw new RuntimeException('Title and description are required.');
+            db()->prepare("INSERT INTO recommendations(title, description, attachment, barangay_id, status, due_date) VALUES(?,?,?,?,'Pending',?)")
+                ->execute([$title, $desc, $memoPath, $singleId, $due]);
+            $recId = (int)db()->lastInsertId();
+
+            $targetIds = $isAll
+                ? array_column(rows('SELECT id FROM barangays'), 'id')
+                : array_unique(array_map('intval', $selBrgys));
+
+            $ins = db()->prepare('INSERT IGNORE INTO recommendation_recipients(recommendation_id, barangay_id, status) VALUES(?, ?, "Pending")');
+            foreach ($targetIds as $bId) {
+                if ($bId > 0) $ins->execute([$recId, $bId]);
             }
 
-            $attachmentPath = handleMemoUpload('memo_file');
+            flash('Recommendation dispatched to ' . ($isAll ? 'all barangays' : count($targetIds) . ' barangay(s)') . '.');
+            $page = 'recommendations';
 
-            db()->prepare('INSERT INTO recommendations(title, description, attachment, barangay_id, status, due_date) VALUES(?,?,?,?,?,?)')
-                ->execute([$title, $desc, $attachmentPath, $brgyId, $status, $dueDate]);
-
-            flash('Recommendation sent with Pending status' . ($attachmentPath ? ' and memo attachment.' : '.'));
+        } elseif ($action === 'update_recommendation') {
+            if (!$isFullAccess) throw new RuntimeException('Only Administrators and Health Officers can manually override recommendation status.');
+            $id     = (int)($_POST['id'] ?? 0);
+            $status = $_POST['status'] ?? 'Pending';
+            db()->prepare('UPDATE recommendations SET status=? WHERE id=?')->execute([$status, $id]);
+            db()->prepare('UPDATE recommendation_recipients SET status=? WHERE recommendation_id=?')->execute([$status, $id]);
+            flash('Recommendation status updated.');
             $page = 'recommendations';
 
         } elseif ($action === 'accept_recommendation') {
             $id = (int)($_POST['id'] ?? 0);
-            db()->prepare("UPDATE recommendations SET status='In Progress' WHERE id=? AND status='Pending'")
-                ->execute([$id]);
-            flash('Recommendation accepted. Status is now In Progress.');
+            db()->prepare("UPDATE recommendation_recipients SET status='In Progress' WHERE recommendation_id=? AND barangay_id=? AND status='Pending'")
+                ->execute([$id, (int)$myBarangayId]);
+            sync_directive_summary('recommendation', $id);
+            flash('Recommendation accepted for your barangay (In Progress).');
             $page = 'recommendations';
 
         } elseif ($action === 'complete_recommendation') {
             $id = (int)($_POST['id'] ?? 0);
-            db()->prepare("UPDATE recommendations SET status='Completed' WHERE id=? AND status='In Progress'")
-                ->execute([$id]);
-            flash('Recommendation marked as Completed.');
-            $page = 'recommendations';
-
-        } elseif ($action === 'update_recommendation') {
-            if (!$isFullAccess) throw new RuntimeException('Access denied.');
-            db()->prepare('UPDATE recommendations SET status=? WHERE id=?')->execute([$_POST['status'] ?? 'Pending', (int)$_POST['id']]);
-            flash('Recommendation status updated.');
+            db()->prepare("UPDATE recommendation_recipients SET status='Completed' WHERE recommendation_id=? AND barangay_id=? AND status='In Progress'")
+                ->execute([$id, (int)$myBarangayId]);
+            sync_directive_summary('recommendation', $id);
+            flash('Recommendation marked as Completed for your barangay.');
             $page = 'recommendations';
 
         // --- GENERATE CUSTOM SURVEILLANCE REPORT ---
@@ -1891,126 +1971,331 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 
 <!-- ======================================================================= -->
-<!-- VIEW 8: ALERTS & NOTIFICATIONS (Create Advisories & Attach PDF Memos)   -->
+<!-- VIEW 8: ALERTS & NOTIFICATIONS (Create Advisories & Attach PDF Memos)   --> 
 <!-- ======================================================================= -->
+
 <?php elseif ($page === 'alerts'):
-// $isFullAccess = in_array($_SESSION['role'] ?? 'Encoder', ['Administrator', 'Health Officer'], true);
     page_heading(
         'Alerts and notifications',
-        $isFullAccess ? 'Create alerts, attach memos, and track barangay acknowledgments.' : 'Review official alerts and memos from the Administrator and accept assigned tasks.',
+        $isFullAccess ? 'Create alerts, attach memos, and track per-barangay acknowledgments.' : 'Review official alerts and memos assigned to your barangay.',
         'bi-bell-fill'
     );
 
-$myBrgyId = (int)($_SESSION['barangay_id'] ?? 0);
-$filterBrgy = $isFullAccess ? (int)($_GET['barangay_id'] ?? 0) : $myBrgyId;
-    $sql  = 'SELECT a.*, b.name barangay FROM alerts a LEFT JOIN barangays b ON b.id=a.barangay_id';
-    $args = [];
-    if ($filterBrgy > 0) {
-        $sql .= ' WHERE (a.barangay_id = ? OR a.barangay_id IS NULL)';
-        $args[] = $filterBrgy;
-    } elseif (!$isFullAccess) {
-        $sql .= ' WHERE a.barangay_id IS NULL';
-    }
-  $list = rows($sql . ' ORDER BY a.created_at DESC', $args);
-?>
+    $totalCityBrgys = count($barangays);
 
- <?php if ($isFullAccess): ?>
-   <!-- ONLY ADMIN & HEALTH OFFICER CAN SEE THIS FORM -->
+    if ($isFullAccess) {
+        $filterBrgy = (int)($_GET['barangay_id'] ?? 0);
+        if ($filterBrgy > 0) {
+            $list = rows('
+                SELECT DISTINCT a.* FROM alerts a
+                JOIN alert_recipients ar ON ar.alert_id = a.id
+                WHERE ar.barangay_id = ?
+                ORDER BY FIELD(a.status, "Pending", "In Progress", "Completed", "Open", "Resolved"), a.created_at DESC
+            ', [$filterBrgy]);
+        } else {
+            $list = rows('SELECT * FROM alerts ORDER BY FIELD(status, "Pending", "In Progress", "Completed", "Open", "Resolved"), created_at DESC');
+        }
+
+        // Map per-barangay progress per alert
+        $recipMap = [];
+        foreach (rows('SELECT ar.alert_id, b.name, ar.status FROM alert_recipients ar JOIN barangays b ON b.id = ar.barangay_id ORDER BY b.name') as $rr) {
+            $recipMap[(int)$rr['alert_id']][] = $rr;
+        }
+    } else {
+        // Encoder sees ONLY alerts assigned to their barangay
+        $list = rows('
+            SELECT a.*, ar.status AS my_status
+            FROM alerts a
+            JOIN alert_recipients ar ON ar.alert_id = a.id
+            WHERE ar.barangay_id = ?
+            ORDER BY FIELD(ar.status, "Pending", "In Progress", "Completed"), a.created_at DESC
+        ', [(int)$myBarangayId]);
+    }
+?>
+   <?php if ($isFullAccess): ?>
    <div class="panel mb-4">
-     <div class="panel-head"><div><h3><i class="bi bi-plus-circle me-2 text-primary"></i>Create an alert</h3><p>Sent alerts automatically start as <b>Pending</b> until accepted by the Barangay Encoder.</p></div></div>
+     <div class="panel-head"><div><h3><i class="bi bi-plus-circle-fill me-2 text-primary"></i>Create an alert</h3><p>Select "All barangays" or check multiple specific barangays.</p></div></div>
      <form method="post" enctype="multipart/form-data" class="row g-3 form-pad">
        <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="save_alert">
        <div class="col-md-4"><label class="form-label"><i class="bi bi-card-heading me-1"></i>Alert title *</label><input class="form-control" name="title" required placeholder="e.g. Health Advisory Memo #12"></div>
        <div class="col-md-2"><label class="form-label"><i class="bi bi-flag me-1"></i>Priority</label><select class="form-select" name="priority"><option>Low</option><option selected>Medium</option><option>High</option></select></div>
        <div class="col-md-3">
-         <label class="form-label"><i class="bi bi-geo-alt me-1"></i>Barangay</label>
-         <select class="form-select" name="barangay_id">
-           <option value="">All barangays</option>
-           <?php foreach ($barangays as $b): ?>
-             <option value="<?= (int)$b['id'] ?>"><?= e($b['name']) ?></option>
-           <?php endforeach; ?>
-         </select>
+         <label class="form-label"><i class="bi bi-geo-alt me-1"></i>Target Barangays *</label>
+         <div class="dropdown">
+           <button class="form-select text-start text-truncate" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">All barangays</button>
+           <div class="dropdown-menu p-2 w-100 shadow-sm" style="max-height:240px;overflow-y:auto;">
+             <label class="dropdown-item rounded d-flex align-items-center gap-2 fw-semibold">
+               <input class="form-check-input m-0 brgy-all-chk" type="checkbox" name="barangay_ids[]" value="all" checked> All barangays
+             </label>
+             <div class="dropdown-divider my-1"></div>
+             <?php foreach ($barangays as $b): ?>
+               <label class="dropdown-item rounded d-flex align-items-center gap-2">
+                 <input class="form-check-input m-0 brgy-item-chk" type="checkbox" name="barangay_ids[]" value="<?= (int)$b['id'] ?>" data-name="<?= e($b['name']) ?>">
+                 <?= e($b['name']) ?>
+               </label>
+             <?php endforeach; ?>
+           </div>
+         </div>
        </div>
-       <div class="col-md-3">
-         <label class="form-label"><i class="bi bi-file-earmark-pdf me-1 text-danger"></i>Attach Memo (PDF only)</label>
-         <input class="form-control" type="file" name="memo_file" accept=".pdf,application/pdf">
-       </div>
+       <div class="col-md-3"><label class="form-label"><i class="bi bi-file-earmark-pdf me-1 text-danger"></i>Attach Memo (PDF only)</label><input class="form-control" type="file" name="memo_pdf" accept="application/pdf,.pdf"></div>
        <div class="col-12"><label class="form-label"><i class="bi bi-chat-left-text me-1"></i>Message *</label><textarea class="form-control" name="message" rows="2" required placeholder="Enter alert details or memo summary..."></textarea></div>
-       <div class="col-12"><button class="btn btn-primary"><i class="bi bi-send me-1"></i>Send alert</button></div>
+       <div class="col-12"><button class="btn btn-primary"><i class="bi bi-send-fill me-1"></i>Send alert</button></div>
      </form>
    </div>
- <?php endif; ?>
+   <?php endif; ?>
 
- <!-- BOTH ADMIN AND ENCODER SEE THE ALERT REGISTER BELOW -->
- <div class="panel">
-   <div class="panel-head flex-wrap gap-2">
-     <div><h3><i class="bi bi-bell-fill me-2 text-primary"></i>Alert register</h3><p><?= count($list) ?> alerts</p></div>
-     <form method="get" class="d-flex gap-2 align-items-center">
-       <input type="hidden" name="page" value="alerts">
-       <select class="form-select form-select-sm" name="barangay_id" onchange="this.form.submit()" style="min-width: 200px;">
-         <option value="0">All Barangays</option>
-         <?php foreach ($barangays as $b): ?>
-           <option value="<?= (int)$b['id'] ?>" <?= $filterBrgy === (int)$b['id'] ? 'selected' : '' ?>><?= e($b['name']) ?></option>
-         <?php endforeach; ?>
-       </select>
-       <?php if ($filterBrgy > 0): ?>
-         <a href="index.php?page=alerts" class="btn btn-sm btn-light">Reset</a>
+   <div class="panel">
+     <div class="panel-head">
+       <div><h3><i class="bi bi-bell-fill me-2 text-primary"></i>Alert register</h3><p><?= count($list) ?> alert(s)</p></div>
+       <?php if ($isFullAccess): ?>
+       <form method="get" class="d-flex gap-2">
+         <input type="hidden" name="page" value="alerts">
+         <select class="form-select form-select-sm" name="barangay_id" onchange="this.form.submit()">
+           <option value="">All Barangays</option>
+           <?php foreach ($barangays as $b): ?><option value="<?= (int)$b['id'] ?>" <?= ((int)($_GET['barangay_id'] ?? 0) === (int)$b['id']) ? 'selected' : '' ?>><?= e($b['name']) ?></option><?php endforeach; ?>
+         </select>
+       </form>
        <?php endif; ?>
+     </div>
+     <div class="table-responsive">
+       <table class="table data-table">
+         <thead>
+           <tr>
+             <th>Alert</th>
+             <th>Memo</th>
+             <th>Target Barangays</th>
+             <th>Priority</th>
+             <th>Created</th>
+             <th><?= $isFullAccess ? 'Barangay Progress' : 'Status' ?></th>
+             <th>Action</th>
+           </tr>
+         </thead>
+         <tbody>
+         <?php if (!$list): ?>
+           <tr><td colspan="7" class="text-center text-muted py-4">No alerts found.</td></tr>
+         <?php endif; ?>
+         <?php foreach ($list as $r):
+           $st = $isFullAccess ? ($r['status'] ?? 'Pending') : ($r['my_status'] ?? 'Pending');
+           $stTone = match ($st) { 'Completed', 'Resolved' => 'success', 'In Progress' => 'info', default => 'warning' };
+           $stIcon = match ($st) { 'Completed', 'Resolved' => 'bi-check-circle-fill', 'In Progress' => 'bi-arrow-repeat', default => 'bi-clock-fill' };
+         ?>
+           <tr>
+             <td><b><?= e($r['title']) ?></b><div class="text-muted small"><?= e($r['message']) ?></div></td>
+             <td><?php if (!empty($r['attachment'])): ?><a class="btn btn-sm btn-outline-danger" href="<?= e($r['attachment']) ?>" target="_blank"><i class="bi bi-file-earmark-pdf-fill me-1"></i>View PDF</a><?php else: ?><span class="text-muted">—</span><?php endif; ?></td>
+             <td>
+               <?php if ($isFullAccess):
+                 $recips = $recipMap[(int)$r['id']] ?? [];
+                 if (count($recips) >= $totalCityBrgys && $totalCityBrgys > 0) {
+                     echo '<span class="fw-semibold text-primary"><i class="bi bi-globe2 me-1"></i>All barangays (' . count($recips) . ')</span>';
+                 } elseif ($recips) {
+                     echo '<i class="bi bi-geo-alt me-1 text-muted"></i>' . e(implode(', ', array_column($recips, 'name')));
+                 } else {
+                     echo '<span class="text-muted">All barangays</span>';
+                 }
+               else: ?>
+                 <i class="bi bi-geo-alt-fill text-primary me-1"></i>Assigned to your barangay
+               <?php endif; ?>
+             </td>
+             <td><span class="badge bg-<?= e(risk_tone($r['priority'])) ?>"><?= e($r['priority']) ?></span></td>
+             <td><?= e(date('M j, Y', strtotime($r['created_at']))) ?></td>
+            
+               <td>
+               <?php if ($isFullAccess):
+                 $recips  = $recipMap[(int)$r['id']] ?? [];
+                 $totR    = count($recips);
+                 $doneR   = count(array_filter($recips, fn($x) => $x['status'] === 'Completed'));
+                 $progR   = count(array_filter($recips, fn($x) => $x['status'] === 'In Progress'));
+                 $activeB = array_filter($recips, fn($x) => in_array($x['status'], ['In Progress', 'Completed'], true));
+               ?>
+                 <?= badge($st, $stTone, $stIcon) ?>
+                 <?php if ($totR > 1): ?>
+                   <div class="small text-muted mt-1"><?= $progR ?> accepted · <?= $doneR ?>/<?= $totR ?> completed</div>
+                   <?php if ($activeB): ?>
+                     <div class="d-flex flex-wrap gap-1 mt-1">
+                       <?php foreach ($activeB as $ab): ?>
+                         <span class="badge <?= $ab['status'] === 'Completed' ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-primary-subtle text-primary border border-primary-subtle' ?>">
+                           <?= e($ab['name']) ?>: <?= e($ab['status']) ?>
+                         </span>
+                       <?php endforeach; ?>
+                     </div>
+                   <?php endif; ?>
+                 <?php endif; ?>
+               <?php else: ?>
+                 <?= badge($st, $stTone, $stIcon) ?>
+               <?php endif; ?>
+               </td>
+             <td>
+               <?php if ($isFullAccess): ?>
+                 <form method="post" class="d-flex gap-1">
+                   <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="update_alert"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+                   <select class="form-select form-select-sm" name="status"><?php foreach (['Pending','In Progress','Completed'] as $s): ?><option <?= $st === $s ? 'selected' : '' ?>><?= $s ?></option><?php endforeach; ?></select>
+                   <button class="btn btn-sm btn-primary" title="Override all"><i class="bi bi-check-lg"></i></button>
+                 </form>
+               <?php else: ?>
+                 <?php if ($st === 'Pending'): ?>
+                   <form method="post"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="accept_alert"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>"><button class="btn btn-sm btn-primary"><i class="bi bi-hand-thumbs-up-fill me-1"></i>Accept</button></form>
+                 <?php elseif ($st === 'In Progress'): ?>
+                   <form method="post"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="complete_alert"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>"><button class="btn btn-sm btn-success"><i class="bi bi-check2-circle me-1"></i>Complete</button></form>
+                 <?php else: ?>
+                   <span class="text-success small fw-semibold"><i class="bi bi-check-circle-fill me-1"></i>Done</span>
+                 <?php endif; ?>
+               <?php endif; ?>
+             </td>
+           </tr>
+         <?php endforeach; ?>
+         </tbody>
+       </table>
+     </div>
+   </div>
+
+<?php elseif ($page === 'recommendations'):
+    page_heading(
+        'Recommendations',
+        $isFullAccess ? 'Plan prevention activities, attach memos, and track per-barangay implementation.' : 'Review recommended actions assigned to your barangay.',
+        'bi-lightbulb-fill'
+    );
+
+    $totalCityBrgys = count($barangays);
+
+    if ($isFullAccess) {
+        $list = rows('SELECT * FROM recommendations ORDER BY FIELD(status, "Pending", "In Progress", "Completed"), created_at DESC');
+        $recRecipMap = [];
+        foreach (rows('SELECT rr.recommendation_id, b.name, rr.status FROM recommendation_recipients rr JOIN barangays b ON b.id = rr.barangay_id ORDER BY b.name') as $rr) {
+            $recRecipMap[(int)$rr['recommendation_id']][] = $rr;
+        }
+    } else {
+        $list = rows('
+            SELECT r.*, rr.status AS my_status
+            FROM recommendations r
+            JOIN recommendation_recipients rr ON rr.recommendation_id = r.id
+            WHERE rr.barangay_id = ?
+            ORDER BY FIELD(rr.status, "Pending", "In Progress", "Completed"), r.created_at DESC
+        ', [(int)$myBarangayId]);
+    }
+?>
+   <?php if ($isFullAccess): ?>
+   <div class="panel mb-4">
+     <div class="panel-head"><div><h3><i class="bi bi-plus-circle-fill me-2 text-primary"></i>Add recommendation</h3><p>Select "All barangays" or check multiple specific barangays.</p></div></div>
+     <form method="post" enctype="multipart/form-data" class="row g-3 form-pad">
+       <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="save_recommendation">
+       <div class="col-md-4"><label class="form-label"><i class="bi bi-lightbulb me-1"></i>Action title *</label><input class="form-control" name="title" required placeholder="e.g. Community clean-up drive"></div>
+       <div class="col-md-3">
+         <label class="form-label"><i class="bi bi-geo-alt me-1"></i>Target Barangays *</label>
+         <div class="dropdown">
+           <button class="form-select text-start text-truncate" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">All barangays</button>
+           <div class="dropdown-menu p-2 w-100 shadow-sm" style="max-height:240px;overflow-y:auto;">
+             <label class="dropdown-item rounded d-flex align-items-center gap-2 fw-semibold">
+               <input class="form-check-input m-0 brgy-all-chk" type="checkbox" name="barangay_ids[]" value="all" checked> All barangays
+             </label>
+             <div class="dropdown-divider my-1"></div>
+             <?php foreach ($barangays as $b): ?>
+               <label class="dropdown-item rounded d-flex align-items-center gap-2">
+                 <input class="form-check-input m-0 brgy-item-chk" type="checkbox" name="barangay_ids[]" value="<?= (int)$b['id'] ?>" data-name="<?= e($b['name']) ?>">
+                 <?= e($b['name']) ?>
+               </label>
+             <?php endforeach; ?>
+           </div>
+         </div>
+       </div>
+       <div class="col-md-2"><label class="form-label"><i class="bi bi-calendar-event me-1"></i>Due date</label><input class="form-control" type="date" name="due_date"></div>
+       <div class="col-md-3"><label class="form-label"><i class="bi bi-file-earmark-pdf me-1 text-danger"></i>Attach Memo (PDF)</label><input class="form-control" type="file" name="memo_pdf" accept="application/pdf,.pdf"></div>
+       <div class="col-12"><label class="form-label"><i class="bi bi-card-text me-1"></i>Description *</label><textarea class="form-control" name="description" rows="2" required placeholder="Enter action details or memo summary..."></textarea></div>
+       <div class="col-12"><button class="btn btn-primary"><i class="bi bi-check2-circle me-1"></i>Save recommendation</button></div>
      </form>
    </div>
-   <div class="table-responsive"><table class="table data-table"><thead><tr><th>Alert</th><th>Memo</th><th>Barangay</th><th>Priority</th><th>Created</th><th>Status</th><th>Action</th></tr></thead><tbody>
-   <?php if (!$list) table_empty(7); foreach ($list as $r): ?>
-     <tr>
-       <td><b><?= e($r['title']) ?></b><small class="d-block text-secondary"><?= e($r['message']) ?></small></td>
-       <td>
-         <?php if (!empty($r['attachment'])): ?>
-           <a href="<?= e($r['attachment']) ?>" target="_blank" class="btn btn-sm btn-outline-primary">
-             <i class="bi bi-file-earmark-pdf me-1"></i>View Memo
-           </a>
-         <?php else: ?>
-           <span class="text-muted">—</span>
+   <?php endif; ?>
+
+   <div class="panel">
+     <div class="panel-head"><div><h3><i class="bi bi-lightbulb-fill me-2 text-primary"></i>Recommended actions</h3><p><?= count($list) ?> action item(s)</p></div></div>
+     <div class="table-responsive">
+       <table class="table data-table">
+         <thead>
+           <tr>
+             <th>Action</th>
+             <th>Memo</th>
+             <th>Target Barangays</th>
+             <th>Due Date</th>
+             <th><?= $isFullAccess ? 'Barangay Progress' : 'Status' ?></th>
+             <th>Action</th>
+           </tr>
+         </thead>
+         <tbody>
+         <?php if (!$list): ?>
+           <tr><td colspan="6" class="text-center text-muted py-4">No recommendations found.</td></tr>
          <?php endif; ?>
-       </td>
-       <td><i class="bi bi-geo-alt text-muted me-1"></i><?= e($r['barangay'] ?? 'All barangays') ?></td>
-       <td><?= status_badge($r['priority']) ?></td>
-       <td><?= e(date('M j, Y', strtotime($r['created_at']))) ?></td>
-       <td><?= status_badge($r['status']) ?></td>
-       <td>
-         <?php if ($isFullAccess): ?>
-           <form method="post" class="d-flex gap-1">
-             <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
-             <input type="hidden" name="action" value="update_alert">
-             <input type="hidden" name="id" value="<?= $r['id'] ?>">
-             <select class="form-select form-select-sm" name="status">
-               <?php foreach (['Pending', 'In Progress', 'Completed'] as $s): ?>
-                 <option <?= $r['status'] === $s ? 'selected' : '' ?>><?= $s ?></option>
-               <?php endforeach; ?>
-             </select>
-             <button class="btn btn-sm btn-primary"><i class="bi bi-check2"></i></button>
-           </form>
-         <?php else: ?>
-           <?php if ($r['status'] === 'Pending' || $r['status'] === 'Open'): ?>
-             <form method="post" class="d-inline">
-               <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
-               <input type="hidden" name="action" value="accept_alert">
-               <input type="hidden" name="id" value="<?= $r['id'] ?>">
-               <button class="btn btn-sm btn-primary"><i class="bi bi-hand-thumbs-up me-1"></i>Accept</button>
-             </form>
-           <?php elseif ($r['status'] === 'In Progress'): ?>
-             <form method="post" class="d-inline" onsubmit="return confirm('Mark this alert as completed?')">
-               <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
-               <input type="hidden" name="action" value="complete_alert">
-               <input type="hidden" name="id" value="<?= $r['id'] ?>">
-               <button class="btn btn-sm btn-success"><i class="bi bi-check2-circle me-1"></i>Complete</button>
-             </form>
-           <?php else: ?>
-             <span class="badge bg-success-subtle text-success border"><i class="bi bi-check-circle-fill me-1"></i>Done</span>
-           <?php endif; ?>
-         <?php endif; ?>
-       </td>
-     </tr>
-   <?php endforeach; ?>
-   </tbody></table></div>
+         <?php foreach ($list as $r):
+           $st = $isFullAccess ? ($r['status'] ?? 'Pending') : ($r['my_status'] ?? 'Pending');
+           $stTone = match ($st) { 'Completed' => 'success', 'In Progress' => 'info', default => 'warning' };
+           $stIcon = match ($st) { 'Completed' => 'bi-check-circle-fill', 'In Progress' => 'bi-arrow-repeat', default => 'bi-clock-fill' };
+         ?>
+           <tr>
+             <td><b><?= e($r['title']) ?></b><div class="text-muted small"><?= e($r['description']) ?></div></td>
+             <td><?php if (!empty($r['attachment'])): ?><a class="btn btn-sm btn-outline-danger" href="<?= e($r['attachment']) ?>" target="_blank"><i class="bi bi-file-earmark-pdf-fill me-1"></i>View PDF</a><?php else: ?><span class="text-muted">—</span><?php endif; ?></td>
+             <td>
+               <?php if ($isFullAccess):
+                 $recips = $recRecipMap[(int)$r['id']] ?? [];
+                 if (count($recips) >= $totalCityBrgys && $totalCityBrgys > 0) {
+                     echo '<span class="fw-semibold text-primary"><i class="bi bi-globe2 me-1"></i>All barangays (' . count($recips) . ')</span>';
+                 } elseif ($recips) {
+                     echo '<i class="bi bi-geo-alt me-1 text-muted"></i>' . e(implode(', ', array_column($recips, 'name')));
+                 } else {
+                     echo '<span class="text-muted">All barangays</span>';
+                 }
+               else: ?>
+                 <i class="bi bi-geo-alt-fill text-primary me-1"></i>Assigned to your barangay
+               <?php endif; ?>
+             </td>
+             <td><i class="bi bi-calendar3 text-muted me-1"></i><?= e($r['due_date'] ?: '—') ?></td>
+             
+               <td>
+               <?php if ($isFullAccess):
+                 $recips  = $recRecipMap[(int)$r['id']] ?? [];
+                 $totR    = count($recips);
+                 $doneR   = count(array_filter($recips, fn($x) => $x['status'] === 'Completed'));
+                 $progR   = count(array_filter($recips, fn($x) => $x['status'] === 'In Progress'));
+                 $activeB = array_filter($recips, fn($x) => in_array($x['status'], ['In Progress', 'Completed'], true));
+               ?>
+                 <?= badge($st, $stTone, $stIcon) ?>
+                 <?php if ($totR > 1): ?>
+                   <div class="small text-muted mt-1"><?= $progR ?> accepted · <?= $doneR ?>/<?= $totR ?> completed</div>
+                   <?php if ($activeB): ?>
+                     <div class="d-flex flex-wrap gap-1 mt-1">
+                       <?php foreach ($activeB as $ab): ?>
+                         <span class="badge <?= $ab['status'] === 'Completed' ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-primary-subtle text-primary border border-primary-subtle' ?>">
+                           <?= e($ab['name']) ?>: <?= e($ab['status']) ?>
+                         </span>
+                       <?php endforeach; ?>
+                     </div>
+                   <?php endif; ?>
+                 <?php endif; ?>
+               <?php else: ?>
+                 <?= badge($st, $stTone, $stIcon) ?>
+               <?php endif; ?>
+             </td>
+             
+             <td>
+               <?php if ($isFullAccess): ?>
+                 <form method="post" class="d-flex gap-1">
+                   <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="update_recommendation"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+                   <select class="form-select form-select-sm" name="status"><?php foreach (['Pending','In Progress','Completed'] as $s): ?><option <?= $st === $s ? 'selected' : '' ?>><?= $s ?></option><?php endforeach; ?></select>
+                   <button class="btn btn-sm btn-primary" title="Override all"><i class="bi bi-check-lg"></i></button>
+                 </form>
+               <?php else: ?>
+                 <?php if ($st === 'Pending'): ?>
+                   <form method="post"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="accept_recommendation"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>"><button class="btn btn-sm btn-primary"><i class="bi bi-hand-thumbs-up-fill me-1"></i>Accept</button></form>
+                 <?php elseif ($st === 'In Progress'): ?>
+                   <form method="post"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="complete_recommendation"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>"><button class="btn btn-sm btn-success"><i class="bi bi-check2-circle me-1"></i>Complete</button></form>
+                 <?php else: ?>
+                   <span class="text-success small fw-semibold"><i class="bi bi-check-circle-fill me-1"></i>Done</span>
+                 <?php endif; ?>
+               <?php endif; ?>
+             </td>
+           </tr>
+         <?php endforeach; ?>
+         </tbody>
+       </table>
+     </div>
+   </div>
 
 <!-- ======================================================================= -->
 <!-- VIEW 9: RECOMMENDATIONS (Public Health Action Plans & PDF Memos)        -->
@@ -2185,6 +2470,31 @@ $filterBrgy = $isFullAccess ? (int)($_GET['barangay_id'] ?? 0) : $myBrgyId;
    </div>
  </div>
 <?php endif; ?>
+<script>
+document.addEventListener('change', function (e) {
+    if (!e.target.classList.contains('brgy-all-chk') && !e.target.classList.contains('brgy-item-chk')) return;
+    const menu   = e.target.closest('.dropdown-menu');
+    const btn    = menu.previousElementSibling;
+    const allChk = menu.querySelector('.brgy-all-chk');
+    const items  = [...menu.querySelectorAll('.brgy-item-chk')];
+
+    if (e.target === allChk && allChk.checked) {
+        items.forEach(c => c.checked = false);
+    } else if (e.target !== allChk && e.target.checked) {
+        allChk.checked = false;
+    }
+
+    const picked = items.filter(c => c.checked);
+    if (!picked.length) {
+        allChk.checked = true;
+        btn.textContent = 'All barangays';
+    } else if (picked.length <= 2) {
+        btn.textContent = picked.map(c => c.dataset.name).join(', ');
+    } else {
+        btn.textContent = picked.length + ' barangays selected';
+    }
+});
+</script>
 
 <!-- Load closing footer tags and JavaScript bundles -->
 <?php require 'includes/footer.php'; ?>

@@ -28,7 +28,25 @@ $nav = [
 $pageTitle  = $page === 'view_import' ? 'Spreadsheet Net View' : ($nav[$page][0] ?? 'Dashboard');
 $flash      = $_SESSION['flash'] ?? null; unset($_SESSION['flash']);
 $cityName   = db()->query("SELECT setting_value FROM settings WHERE setting_key='city_name'")->fetchColumn() ?: 'Butuan City';
-$openAlerts = (int)db()->query("SELECT COUNT(*) FROM alerts WHERE status NOT IN ('Resolved', 'Completed')")->fetchColumn();
+
+$headerRole       = $_SESSION['role'] ?? 'Encoder';
+$headerFullAccess = in_array($headerRole, ['Administrator', 'Health Officer'], true);
+
+if ($headerFullAccess) {
+    $openAlerts = (int)db()->query("SELECT COUNT(*) FROM alerts WHERE status NOT IN ('Resolved', 'Completed')")->fetchColumn();
+    $openRecs   = (int)db()->query("SELECT COUNT(*) FROM recommendations WHERE status NOT IN ('Resolved', 'Completed')")->fetchColumn();
+} else {
+    $bId = (int)($myBarangayId ?? 0);
+
+    $stA = db()->prepare("SELECT COUNT(*) FROM alert_recipients WHERE barangay_id = ? AND status NOT IN ('Resolved', 'Completed')");
+    $stA->execute([$bId]);
+    $openAlerts = (int)$stA->fetchColumn();
+
+    $stR = db()->prepare("SELECT COUNT(*) FROM recommendation_recipients WHERE barangay_id = ? AND status NOT IN ('Resolved', 'Completed')");
+    $stR->execute([$bId]);
+    $openRecs = (int)$stR->fetchColumn();
+}
+
 ?>
 <!doctype html>
 <html lang="en">
@@ -322,25 +340,26 @@ $openAlerts = (int)db()->query("SELECT COUNT(*) FROM alerts WHERE status NOT IN 
     <a href="index.php?page=barangays" class="nav-link <?= $page === 'barangays' ? 'active' : '' ?>">
       <i class="bi bi-buildings-fill"></i> Barangays
     </a>
- <?php endif; ?>
+     <?php endif; ?>
   <a href="index.php?page=alerts" class="nav-link <?= $page === 'alerts' ? 'active' : '' ?>">
     <i class="bi bi-bell-fill"></i> Alerts
     <?php if ($openAlerts): ?><span class="nav-count"><?= $openAlerts ?></span><?php endif; ?>
   </a>
 
-  <a href="index.php?page=recommendations" class="nav-link <?= $page === 'recommendations' ? 'active' : '' ?>">
-    <i class="bi bi-lightbulb-fill"></i> Recommendations
-  </a>
+<a href="index.php?page=recommendations" class="nav-link <?= $page === 'recommendations' ? 'active' : '' ?>">
+  <i class="bi bi-lightbulb-fill"></i> Recommendations
+  <?php if ($openRecs): ?><span class="nav-count"><?= $openRecs ?></span><?php endif; ?>
+</a>
 
-    <a href="index.php?page=users" class="nav-link <?= $page === 'users' ? 'active' : '' ?>">
+  <?php if ($isFullAccess): ?>
+ <a href="index.php?page=users" class="nav-link <?= $page === 'users' ? 'active' : '' ?>">
       <i class="bi bi-people-fill"></i> Users
     </a>
-
-  <a href="index.php?page=settings" class="nav-link <?= $page === 'settings' ? 'active' : '' ?>">
+     <a href="index.php?page=settings" class="nav-link <?= $page === 'settings' ? 'active' : '' ?>">
     <i class="bi bi-sliders"></i> Settings
   </a>
+<?php endif; ?>
 </nav>
-
     <div class="sidebar-bottom">
       <div class="city-chip" title="Local Health Unit">
         <i class="bi bi-geo-alt-fill"></i>

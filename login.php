@@ -30,7 +30,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['name']    = $user['name'];
             $_SESSION['email']   = $user['email'];
             $_SESSION['role']    = $user['role'];
-            $_SESSION['barangay_id'] = $user['barangay_id'] ?? null;
+            $_SESSION['user_id']     = (int)$user['id'];
+            $_SESSION['barangay_id'] = !empty($user['barangay_id']) ? (int)$user['barangay_id'] : null;
+
+           // $_SESSION['barangay_id'] = $user['barangay_id'] ?? null;
+           
             header('Location: index.php');
             exit;
         }
@@ -88,7 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           <b>Demo account</b><br><br>
           Email: admin@disease.local<br>Password: password<br><br>
           Email: officer@disease.local<br>Password: Officer@2026<br><br>
-          Email: encoder@disease.local<br>Password: Encoder@2026
+          Email: Maonencoder@disease.local<br>Password: Encoder@2026
         </div>
       </div>
       <div class="login-copyright">© <?= date('Y') ?> Disease Monitoring System</div>
